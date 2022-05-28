@@ -18,9 +18,9 @@ class BoxCharacterType(enum.Enum):
 
 class BoxCharacters:
     ASCII_CHARS = (
-        ('|', ) * 2,
+        ('+', ) * 2,
         ("'", ) * 2,
-        ('─', ) * 2,
+        ('-', ) * 2,
         ('|', ) * 2,
         (' ', ) * 2,
         )
@@ -70,24 +70,22 @@ class NodeType(enum.Enum):
 
 
 class Node:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, path):
+        self.path = path
         self.type = None
-        self.position = None
-        self.index = None
-        self.weight = None
-        self.parent = None
         self.children = []
+
+    @property
+    def name(self):
+        return self.path if self.is_placeholder() else os.path.basename(self.path)
 
     @classmethod
     def placeholder(cls, count):
+        assert type(count) is int
         return cls(count)
 
     def is_placeholder(self):
-        return type(self.name) is int
-
-    def __repr__(self):
-        return f'Node<"{self.name}", {len(self.children)} children>'
+        return type(self.path) is int
 
 
 class FilesystemParser:
@@ -97,66 +95,51 @@ class FilesystemParser:
         self.max_depth = param['level'] - 1
         self.child_limit = param['limit']
 
-    def _make_nodes(self, entries):
-        overflow = len(entries) - self.child_limit
-        placeholder = [overflow] if overflow > 0 else []
-        maybe_shortened = entries[:min(len(entries), self.child_limit)]
-        return [Node(x) for x in maybe_shortened + placeholder]
+    def _make_nodes(self, directory):
+        def get_path_or_overflow(x):
+            if type(x) is str:
+                return os.path.join(directory, x)
+            else:
+                return x
+        entries = os.listdir(directory)
+        # TODO: We could make what we sort on an input parameter.
+        entries.sort()
+        entries = [Node(get_path_or_overflow(x)) for x in entries]
+        included = list(filter(lambda x: self._should_include(x), entries))
+        overflow = len(included) - self.child_limit
+        if overflow > 0:
+            included = included[:-overflow]
+        placeholder = [Node(overflow)] if overflow > 0 else []
+        return included + placeholder
 
-    def _should_include(self, name):
-        return not name.startswith('.') or self.show_hidden
+    def _should_include(self, node):
+        if node.is_placeholder():
+            return True
+        return not node.name.startswith('.') or self.show_hidden
 
-    def _build_structure(self, parent, root, depth):
-        group = []
-        if depth <= self.max_depth:
-            for node in self._make_nodes(os.listdir(parent)):
-                if node.is_placeholder():
-                    group.append(node)
-                elif self._should_include(node.name):
-                    path = os.path.join(parent, node.name)
-                    mode = os.lstat(path).st_mode
-                    if stat.S_ISDIR(mode):
-                        node.type = NodeType.DIRECTORY
-                        group.append(self._build_structure(path, node, depth + 1))
-                    elif not self.directories_only:
-                        node.type = NodeType.from_mode(mode)
-                        group.append(node)
-        root.name = os.path.basename(parent)
-        root.children = group
-        return root
-
-    @staticmethod
-    def _populate_info(root):
-        position = 0
-
-        def populate(node, index, depth):
-            nonlocal position
-            node.index = index
-            node.position = position
-            position += 1
-            for i, child in enumerate(node.children):
-                populate(child, i, depth + 1)
-                child.parent = node
-            return node
-
-        def compute_weights(node):
-            if node is None:
-                return 0
-            weight = 1
-            for child in node.children:
-                weight += compute_weights(child)
-            node.weight = weight
-            return weight
-
-        root = populate(root, 0, 0)
-        compute_weights(root)
+    def _build_structure(self, root, depth):
+        if depth > self.max_depth:
+            return root
+        for node in self._make_nodes(root.path):
+            if node.is_placeholder():
+                root.children.append(node)
+                continue
+            # if self._should_exclude(node):
+            #     continue
+            path = os.path.join(root.path, node.name)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISDIR(mode):
+                node.type = NodeType.DIRECTORY
+                root.children.append(self._build_structure(node, depth + 1))
+            elif not self.directories_only:
+                node.type = NodeType.from_mode(mode)
+                root.children.append(node)
         return root
 
     def parse(self, path):
-        root = Node(os.path.basename(path))
+        root = Node(path)
         root.type = NodeType.DIRECTORY
-        root = self._build_structure(path, root, 0)
-        return self._populate_info(root)
+        return self._build_structure(root, 0)
 
 
 class Color(enum.Enum):
@@ -213,44 +196,61 @@ class Colorizer:
 
 
 class TreeView:
+    _PLACEHOLDER_TEMPLATE = '<{} more...>'
+
     def __init__(self, param):
         is_terminal = param['output'] == '<stdout>'
         self.colorizer = Colorizer(is_terminal, not param['nocolors'], param['bold'])
-        self.width = param['width']
+        self.width = param['width'] + param['ascii']
         self.indent = param['indent']
         self.chars = BoxCharacters(use_thick=param['thick'], use_ascii=param['ascii'])
 
-    def _pad(self):
-        return ' ' * self.width
-
-    def _bar(self):
-        return self.chars(BoxCharacterType.HBAR) * (self.width-1)
+    def _pad(self, has_pipe):
+        if has_pipe:
+            return self.chars(BoxCharacterType.VBAR) + ' ' * self.width
+        else:
+            return ' ' * (self.width+1)
 
     def _make_name(self, node, is_last):
         def make(start, end):
-            return start + self._bar() + self.chars(BoxCharacterType.ECAP) + end
-        if not node.is_placeholder():
+            bar = self.chars(BoxCharacterType.HBAR) * (self.width-1)
+            return start + bar + self.chars(BoxCharacterType.ECAP) + end
+        if node.is_placeholder():
+            name = self.colorizer(self._PLACEHOLDER_TEMPLATE.format(node.name), Color.WHITE)
+            return make(self.chars(BoxCharacterType.BEND), name)
+        else:
             char = self.chars(BoxCharacterType.BEND) if is_last else self.chars(BoxCharacterType.LTEE)
             name = self.colorizer(node.name, node.type)
             return make(char, name)
-        else:
-            assert is_last
-            name = self.colorizer(f'<{node.name} others...>', Color.WHITE)
-            return make(self.chars(BoxCharacterType.BEND), name)
+
+    def _construct(self, root, prefix):
+        output = []
+        for i, node in enumerate(root.children):
+            is_last = i == len(root.children) - 1
+            output.append(prefix + self._make_name(node, is_last))
+            if node.type == NodeType.DIRECTORY:
+                output += self._construct(node, prefix + self._pad(not is_last))
+        return output
 
     def construct(self, root):
-        queue = list(root.children)
-        output = [' ' * self.indent] * root.weight
-        output[0] += self.colorizer(root.name, Color.WHITE)
-        while queue:
-            node = queue.pop(0)
-            is_last = node.index == len(node.parent.children) - 1
-            output[node.position] += self._make_name(node, is_last)
-            queue += node.children
-            for i in range(1, node.weight):
-                ch = ' ' if is_last else self.chars(BoxCharacterType.VBAR)
-                output[node.position+i] += ch + self._pad()
-        return '\n'.join(output)
+        prefix = ' ' * self.indent
+        result = self._construct(root, prefix)
+        return '\n'.join([prefix + root.name] + result)
+
+
+class Printer:
+    def __init__(self, path):
+        self.path = path
+
+    def _print_to_file(self, message):
+        with open(self.path, 'a') as f:
+            print(message, file=f)
+
+    def __call__(self, message):
+        if self.path == '<stdout>':
+            print(message)
+        else:
+            self._print_to_file(message)
 
 
 FANCY_LEGEND_TEMPLATE = (
@@ -312,7 +312,7 @@ def main():
                         help='Show this many tree levels')
     parser.add_argument('-n', '--limit', type=int, default=20,
                         help='Maximum number of entries to display in a directory')
-    parser.add_argument('-I', '--indent', type=int, default=1,
+    parser.add_argument('-I', '--indent', type=int, default=0,
                         help='Number of whitespace characters preceding the trunk')
     parser.add_argument('-w', '--width', type=int, default=1,
                         help='Width of the connection from an entry to the trunk')
@@ -353,20 +353,16 @@ def main():
     check_bounds('width', args.width, (1, 80))
     check_bounds('indent', args.indent, (0, 80))
 
-    def show_tree(root, file):
-        view = TreeView(args.__dict__)
-        print(view.construct(root), file=file)
-
     try:
         parser = FilesystemParser(args.__dict__)
-        tree = parser.parse(args.path)
-        if args.output == '<stdout>':
-            show_tree(tree, sys.stdout)
-        else:
-            with open(args.output, 'a') as f:
-                show_tree(tree, f)
+        root = parser.parse(args.path)
+        view = TreeView(args.__dict__)
+        printer = Printer(args.output)
+        printer(view.construct(root))
+
     except Exception as error:
-        fatal(error)
+        # fatal(error)
+        raise
 
 
 if __name__ == '__main__':
