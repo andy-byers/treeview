@@ -361,8 +361,7 @@ def main():
         printer(view.construct(root))
 
     except Exception as error:
-        # fatal(error)
-        raise
+        fatal(error)
 
 
 if __name__ == '__main__':
