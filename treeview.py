@@ -220,15 +220,16 @@ class TreeView:
         self.indent = param['indent']
         self.chars = BoxCharacters(use_thick=param['thick'], use_ascii=param['ascii'])
 
-    def _pad(self):
-        return ' ' * self.width
-
-    def _bar(self):
-        return self.chars(BoxCharacterType.HBAR) * (self.width-1)
+    def _pad(self, has_pipe):
+        if has_pipe:
+            return self.chars(BoxCharacterType.VBAR) + ' ' * self.width
+        else:
+            return ' ' * (self.width+1)
 
     def _make_name(self, node, is_last):
         def make(start, end):
-            return start + self._bar() + self.chars(BoxCharacterType.ECAP) + end
+            bar = self.chars(BoxCharacterType.HBAR) * (self.width-1)
+            return start + bar + self.chars(BoxCharacterType.ECAP) + end
         if not node.is_placeholder():
             char = self.chars(BoxCharacterType.BEND) if is_last else self.chars(BoxCharacterType.LTEE)
             name = self.colorizer(node.name, node.type)
@@ -238,19 +239,17 @@ class TreeView:
             name = self.colorizer(f'<{node.name} others...>', Color.WHITE)
             return make(self.chars(BoxCharacterType.BEND), name)
 
+    def _construct(self, root, prefix):
+        output = []
+        for i, node in enumerate(root.children):
+            is_last = i == len(root.children) - 1
+            output.append(prefix + self._make_name(node, is_last))
+            if node.type == NodeType.DIRECTORY:
+                output += self._construct(node, prefix + self._pad(not is_last))
+        return output
+
     def construct(self, root):
-        queue = list(root.children)
-        output = [' ' * self.indent] * root.weight
-        output[0] += self.colorizer(root.name, Color.WHITE)
-        while queue:
-            node = queue.pop(0)
-            is_last = node.index == len(node.parent.children) - 1
-            output[node.position] += self._make_name(node, is_last)
-            queue += node.children
-            for i in range(1, node.weight):
-                ch = ' ' if is_last else self.chars(BoxCharacterType.VBAR)
-                output[node.position+i] += ch + self._pad()
-        return '\n'.join(output)
+        return '\n'.join(self._construct(root, ''))
 
 
 FANCY_LEGEND_TEMPLATE = (
