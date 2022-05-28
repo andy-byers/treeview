@@ -21,7 +21,7 @@ We write:
 python3 treeview.py -n 10 -L 2 ./sqlite
 ```
 
-This causes the two levels to be printed:
+This causes the first two levels to be printed:
 ![treeview_n_10_L_2](resources/example_2.png)
 
 ## Tests
