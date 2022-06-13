@@ -1,5 +1,5 @@
 # treeview
-A simple python script for displaying a filesystem hierarchy as a tree
+A simple commandline tool that displays a directory structure as a pretty tree.
 
 ## Example
 This example displays the SQLite3 source tree.
